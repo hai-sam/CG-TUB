@@ -1,0 +1,33 @@
+Time for 1000 using KDTree implementation of collectInRadius: 8
+Time for 1000 Points using KDTree implementation of collectKNearest: 39
+
+Time for 1000 Points using Brute Force implementation of collectInRadius: 16
+Time for 1000 Points using Brute Force implementation of collectKNearest: 3
+
+
+Time for 10000 using KDTree implementation of collectInRadius: 23
+Time for 10000 Points using KDTree implementation of collectKNearest: 39
+
+Time for 10000 Points using Brute Force implementation of collectInRadius: 129
+Time for 10000 Points using Brute Force implementation of collectKNearest: 2
+
+
+Time for 100000 using KDTree implementation of collectInRadius: 247
+Time for 100000 Points using KDTree implementation of collectKNearest: 56
+
+Time for 100000 Points using Brute Force implementation of collectInRadius: 1306
+Time for 100000 Points using Brute Force implementation of collectKNearest: 2
+
+
+Time for 1000000 using KDTree implementation of collectInRadius: 3812
+Time for 1000000 Points using KDTree implementation of collectKNearest: 66
+
+Time for 1000000 Points using Brute Force implementation of collectInRadius: 13007
+Time for 1000000 Points using Brute Force implementation of collectKNearest: 5
+
+
+Time for 10000000 using KDTree implementation of collectInRadius: 39700
+Time for 10000000 Points using KDTree implementation of collectKNearest: 113
+
+Time for 10000000 Points using Brute Force implementation of collectInRadius: 138197
+Time for 10000000 Points using Brute Force implementation of collectKNearest: 6
