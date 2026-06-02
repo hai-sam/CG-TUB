@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <queue>
 #include <random>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -195,46 +197,42 @@ public:
     return indices;
   }
 
-  void SearchTreeRadius2D(Node *n, Point const &p, std::vector<size_t> &result,
-                          float radius) const {
-    // if space is empty -> return
-    if (n == nullptr)
-      return;
-    // if leaf node -> check if inside the radius
-    if (n->isLeaf) {
-      float diff_x = p[0] - getPoints()[n->pointIndex][0];
-      float diff_y = p[1] - getPoints()[n->pointIndex][1];
-      float dist = std::sqrt(diff_x * diff_x + diff_y * diff_y);
-      if (dist < radius)
-        result.push_back(n->pointIndex);
-      return;
-    }
-    float dx = p[0] - getPoints()[n->pointIndex][0];
-    float dy = p[1] - getPoints()[n->pointIndex][1];
-    float dist = std::sqrt(dx * dx + dy * dy);
-    if (dist < radius) {
-      result.push_back(n->pointIndex);
-    }
-    if (n->splitAxis == 2) {
-      SearchTreeRadius2D(n->left.get(), p, result, radius);
-      SearchTreeRadius2D(n->right.get(), p, result, radius);
-    } else {
-      if (p[n->splitAxis] < getPoints()[n->pointIndex][n->splitAxis]) {
-        SearchTreeRadius2D(n->left.get(), p, result, radius);
-        float planeDistance =
-            abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
-        if (planeDistance < radius) {
-          SearchTreeRadius2D(n->right.get(), p, result, radius);
-        }
-      } else {
-        SearchTreeRadius2D(n->right.get(), p, result, radius);
-        float planeDistance =
-            abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
-        if (planeDistance < radius) {
-          SearchTreeRadius2D(n->left.get(), p, result, radius);
-        }
+  void SearchTreeRadius2D(Node* n, Point const& p, std::vector<size_t>& result, float radius) const {
+      if (n == nullptr) return;
+      
+      float radiusSq = radius * radius;
+      
+      if (n->isLeaf) {
+          float dx = p[0] - getPoints()[n->pointIndex][0];
+          float dy = p[1] - getPoints()[n->pointIndex][1];
+          float distSq = dx*dx + dy*dy;
+          if (distSq < radiusSq) result.push_back(n->pointIndex);
+          return;
       }
-    }
+      float dx = p[0] - getPoints()[n->pointIndex][0];
+      float dy = p[1] - getPoints()[n->pointIndex][1];
+      float distSq = dx*dx + dy*dy;
+      if (distSq < radiusSq) {
+          result.push_back(n->pointIndex);
+      }
+      if (n->splitAxis == 2) {
+          SearchTreeRadius2D(n->left.get(), p, result, radius);
+          SearchTreeRadius2D(n->right.get(), p, result, radius);
+      } else {
+          if (p[n->splitAxis] < getPoints()[n->pointIndex][n->splitAxis]) {
+              SearchTreeRadius2D(n->left.get(), p, result, radius);
+              float planeDistance = abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
+              if (planeDistance * planeDistance < radiusSq) {
+                  SearchTreeRadius2D(n->right.get(), p, result, radius);
+              }
+          } else {
+              SearchTreeRadius2D(n->right.get(), p, result, radius);
+              float planeDistance = abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
+              if (planeDistance * planeDistance < radiusSq) {
+                  SearchTreeRadius2D(n->left.get(), p, result, radius);
+              }
+          }
+      }
   }
 
   void SearchTreeRadius(Node *n, Point const &p, std::vector<size_t> &result,
@@ -717,17 +715,33 @@ void callback() {
 
       std::vector<Point> controlPoints(gridM * gridN);
       std::vector<Point> flatControlPoints(gridM * gridN);
-      for (int j = 0; j < gridN; ++j) {
-        float v = (gridN == 1) ? 0.5f : static_cast<float>(j) / (gridN - 1);
-        float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
-        for (int i = 0; i < gridM; ++i) {
-          float u = (gridM == 1) ? 0.5f : static_cast<float>(i) / (gridM - 1);
-          float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
-          WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
-          controlPoints[j * gridM + i] = res.pt;
-          flatControlPoints[j * gridM + i] = {x, y, bboxMin[2]};
-        }
+      
+      std::vector<std::future<void>> futuresCtrl;
+      int numThreads = std::thread::hardware_concurrency();
+      if (numThreads == 0) numThreads = 4;
+      int chunkCtrl = gridN / numThreads;
+      if (chunkCtrl == 0) chunkCtrl = 1;
+      
+      for (int t = 0; t < numThreads; ++t) {
+          int startJ = t * chunkCtrl;
+          int endJ = (t == numThreads - 1) ? gridN : startJ + chunkCtrl;
+          if (startJ >= gridN) break;
+          
+          futuresCtrl.push_back(std::async(std::launch::async, [startJ, endJ, bboxMin, bboxMax, &controlPoints, &flatControlPoints]() {
+              for (int j = startJ; j < endJ; ++j) {
+                float v = (gridN == 1) ? 0.5f : static_cast<float>(j) / (gridN - 1);
+                float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
+                for (int i = 0; i < gridM; ++i) {
+                  float u = (gridM == 1) ? 0.5f : static_cast<float>(i) / (gridM - 1);
+                  float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
+                  WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
+                  controlPoints[j * gridM + i] = res.pt;
+                  flatControlPoints[j * gridM + i] = {x, y, bboxMin[2]};
+                }
+              }
+          }));
       }
+      for (auto& f : futuresCtrl) { f.get(); }
 
       int numU = kMesh * gridM;
       int numV = kMesh * gridN;
@@ -794,17 +808,32 @@ void callback() {
       std::vector<Point> mlsVertices(numU * numV);
       std::vector<Normal> mlsNormals(numU * numV);
 
-      for (int j = 0; j < numV; ++j) {
-        float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
-        float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
-        for (int i = 0; i < numU; ++i) {
-          float u = (numU == 1) ? 0.5f : static_cast<float>(i) / (numU - 1);
-          float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
-          WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
-          mlsVertices[j * numU + i] = res.pt;
-          mlsNormals[j * numU + i] = res.normal;
-        }
+      std::vector<std::future<void>> futures;
+      int numThreads = std::thread::hardware_concurrency();
+      if (numThreads == 0) numThreads = 4;
+      int chunk = numV / numThreads;
+      if (chunk == 0) chunk = 1;
+
+      for (int t = 0; t < numThreads; ++t) {
+          int startJ = t * chunk;
+          int endJ = (t == numThreads - 1) ? numV : startJ + chunk;
+          if (startJ >= numV) break;
+          
+          futures.push_back(std::async(std::launch::async, [startJ, endJ, numU, numV, bboxMin, bboxMax, &mlsVertices, &mlsNormals]() {
+              for (int j = startJ; j < endJ; ++j) {
+                float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
+                float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
+                for (int i = 0; i < numU; ++i) {
+                  float u = (numU == 1) ? 0.5f : static_cast<float>(i) / (numU - 1);
+                  float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
+                  WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
+                  mlsVertices[j * numU + i] = res.pt;
+                  mlsNormals[j * numU + i] = res.normal;
+                }
+              }
+          }));
       }
+      for (auto& f : futures) { f.get(); }
 
       std::vector<std::vector<size_t>> mlsFaces;
       for (int j = 0; j < numV - 1; ++j) {
