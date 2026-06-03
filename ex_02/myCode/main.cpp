@@ -197,42 +197,50 @@ public:
     return indices;
   }
 
-  void SearchTreeRadius2D(Node* n, Point const& p, std::vector<size_t>& result, float radius) const {
-      if (n == nullptr) return;
-      
-      float radiusSq = radius * radius;
-      
-      if (n->isLeaf) {
-          float dx = p[0] - getPoints()[n->pointIndex][0];
-          float dy = p[1] - getPoints()[n->pointIndex][1];
-          float distSq = dx*dx + dy*dy;
-          if (distSq < radiusSq) result.push_back(n->pointIndex);
-          return;
-      }
+  void SearchTreeRadius2D(Node *n, Point const &p, std::vector<size_t> &result,
+                          float radius) const {
+    if (n == nullptr)
+      return;
+
+    float radiusSq = radius * radius;
+
+    if (n->isLeaf) {
       float dx = p[0] - getPoints()[n->pointIndex][0];
       float dy = p[1] - getPoints()[n->pointIndex][1];
-      float distSq = dx*dx + dy*dy;
-      if (distSq < radiusSq) {
-          result.push_back(n->pointIndex);
-      }
-      if (n->splitAxis == 2) {
-          SearchTreeRadius2D(n->left.get(), p, result, radius);
+      float distSq = dx * dx + dy * dy;
+      if (distSq < radiusSq)
+        result.push_back(n->pointIndex);
+      return;
+    }
+    float dx = p[0] - getPoints()[n->pointIndex][0];
+    float dy = p[1] - getPoints()[n->pointIndex][1];
+    float distSq = dx * dx + dy * dy;
+    if (distSq < radiusSq) {
+      result.push_back(n->pointIndex);
+    }
+    if (n->splitAxis == 2) {
+      SearchTreeRadius2D(n->left.get(), p, result, radius);
+      SearchTreeRadius2D(n->right.get(), p, result, radius);
+    } else {
+      // check if radius touches the plane
+      if (p[n->splitAxis] < getPoints()[n->pointIndex][n->splitAxis]) {
+        SearchTreeRadius2D(n->left.get(), p, result, radius);
+
+        float planeDistance =
+            abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
+
+        if (planeDistance * planeDistance < radiusSq) {
           SearchTreeRadius2D(n->right.get(), p, result, radius);
+        }
       } else {
-          if (p[n->splitAxis] < getPoints()[n->pointIndex][n->splitAxis]) {
-              SearchTreeRadius2D(n->left.get(), p, result, radius);
-              float planeDistance = abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
-              if (planeDistance * planeDistance < radiusSq) {
-                  SearchTreeRadius2D(n->right.get(), p, result, radius);
-              }
-          } else {
-              SearchTreeRadius2D(n->right.get(), p, result, radius);
-              float planeDistance = abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
-              if (planeDistance * planeDistance < radiusSq) {
-                  SearchTreeRadius2D(n->left.get(), p, result, radius);
-              }
-          }
+        SearchTreeRadius2D(n->right.get(), p, result, radius);
+        float planeDistance =
+            abs(p[n->splitAxis] - getPoints()[n->pointIndex][n->splitAxis]);
+        if (planeDistance * planeDistance < radiusSq) {
+          SearchTreeRadius2D(n->left.get(), p, result, radius);
+        }
       }
+    }
   }
 
   void SearchTreeRadius(Node *n, Point const &p, std::vector<size_t> &result,
@@ -465,9 +473,12 @@ WLSResult approximateWLS(const KDTree &tree, float x, float y, float r) {
 
 Point deCasteljau1D(std::vector<Point> pts, float t) {
   int n = pts.size() - 1;
+  // n is degree of the Bezier curve
   if (n < 0)
     return {0, 0, 0};
+  // loop from degree 1 up to n
   for (int r = 1; r <= n; ++r) {
+    // loop through the control points
     for (int i = 0; i <= n - r; ++i) {
       for (int k = 0; k < 3; ++k) {
         pts[i][k] = (1.0f - t) * pts[i][k] + t * pts[i + 1][k];
@@ -696,11 +707,14 @@ void callback() {
     polyscope::registerSurfaceMesh("KDTree Planes", vertices, faces);
   }
 
+  //------------------- ex_02------------------
+
   ImGui::Separator();
   ImGui::Text("Exercise 2: Surfaces");
-  static int gridM = 10;
   static int gridN = 10;
+  static int gridM = 10;
   static int kMesh = 5;
+
   static float wlsRadius = 0.5f;
 
   ImGui::SliderInt("m", &gridM, 2, 50);
@@ -715,43 +729,55 @@ void callback() {
 
       std::vector<Point> controlPoints(gridM * gridN);
       std::vector<Point> flatControlPoints(gridM * gridN);
-      
+
       std::vector<std::future<void>> futuresCtrl;
       int numThreads = std::thread::hardware_concurrency();
-      if (numThreads == 0) numThreads = 4;
+      if (numThreads == 0)
+        numThreads = 4;
       int chunkCtrl = gridN / numThreads;
-      if (chunkCtrl == 0) chunkCtrl = 1;
-      
+      if (chunkCtrl == 0)
+        chunkCtrl = 1;
+
       for (int t = 0; t < numThreads; ++t) {
-          int startJ = t * chunkCtrl;
-          int endJ = (t == numThreads - 1) ? gridN : startJ + chunkCtrl;
-          if (startJ >= gridN) break;
-          
-          futuresCtrl.push_back(std::async(std::launch::async, [startJ, endJ, bboxMin, bboxMax, &controlPoints, &flatControlPoints]() {
+        int startJ = t * chunkCtrl;
+        int endJ = (t == numThreads - 1) ? gridN : startJ + chunkCtrl;
+        if (startJ >= gridN)
+          break;
+
+        futuresCtrl.push_back(std::async(
+            std::launch::async, [startJ, endJ, bboxMin, bboxMax, &controlPoints,
+                                 &flatControlPoints]() {
               for (int j = startJ; j < endJ; ++j) {
-                float v = (gridN == 1) ? 0.5f : static_cast<float>(j) / (gridN - 1);
+                float v =
+                    (gridN == 1) ? 0.5f : static_cast<float>(j) / (gridN - 1);
                 float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
                 for (int i = 0; i < gridM; ++i) {
-                  float u = (gridM == 1) ? 0.5f : static_cast<float>(i) / (gridM - 1);
+                  float u =
+                      (gridM == 1) ? 0.5f : static_cast<float>(i) / (gridM - 1);
                   float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
                   WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
                   controlPoints[j * gridM + i] = res.pt;
                   flatControlPoints[j * gridM + i] = {x, y, bboxMin[2]};
                 }
               }
-          }));
+            }));
       }
-      for (auto& f : futuresCtrl) { f.get(); }
+      for (auto &f : futuresCtrl) {
+        f.get();
+      }
 
       int numU = kMesh * gridM;
       int numV = kMesh * gridN;
+
       std::vector<Point> surfVertices(numU * numV);
       std::vector<Normal> surfNormals(numU * numV);
 
       for (int j = 0; j < numV; ++j) {
         float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
+
         for (int i = 0; i < numU; ++i) {
           float u = (numU == 1) ? 0.5f : static_cast<float>(i) / (numU - 1);
+
           surfVertices[j * numU + i] =
               evaluateBezier(controlPoints, gridM, gridN, u, v);
           surfNormals[j * numU + i] =
@@ -774,21 +800,23 @@ void callback() {
                                                      surfVertices, surfFaces);
       surfMesh->addVertexVectorQuantity("normals", surfNormals);
 
-            std::vector<std::array<size_t, 2>> ctrlEdges;
-            for (int j = 0; j < gridN; ++j) {
-                for (int i = 0; i < gridM; ++i) {
-                    size_t idx = j * gridM + i;
-                    if (i < gridM - 1) ctrlEdges.push_back({idx, idx + 1});
-                    if (j < gridN - 1) ctrlEdges.push_back({idx, idx + gridM});
-                }
-            }
-            
-            auto ctrlNet = polyscope::registerCurveNetwork("Control Grid (3D)",
+      std::vector<std::array<size_t, 2>> ctrlEdges;
+      for (int j = 0; j < gridN; ++j) {
+        for (int i = 0; i < gridM; ++i) {
+          size_t idx = j * gridM + i;
+          if (i < gridM - 1)
+            ctrlEdges.push_back({idx, idx + 1});
+          if (j < gridN - 1)
+            ctrlEdges.push_back({idx, idx + gridM});
+        }
+      }
+
+      auto ctrlNet = polyscope::registerCurveNetwork("Control Grid (3D)",
                                                      controlPoints, ctrlEdges);
       ctrlNet->setRadius(0.002);
 
-      auto flatNet = polyscope::registerCurveNetwork("Control Grid (2D)",
-                                                     flatControlPoints, ctrlEdges);
+      auto flatNet = polyscope::registerCurveNetwork(
+          "Control Grid (2D)", flatControlPoints, ctrlEdges);
       flatNet->setRadius(0.002);
       flatNet->setEnabled(false); // Hidden by default
 
@@ -810,30 +838,39 @@ void callback() {
 
       std::vector<std::future<void>> futures;
       int numThreads = std::thread::hardware_concurrency();
-      if (numThreads == 0) numThreads = 4;
+      if (numThreads == 0)
+        numThreads = 4;
       int chunk = numV / numThreads;
-      if (chunk == 0) chunk = 1;
+      if (chunk == 0)
+        chunk = 1;
 
       for (int t = 0; t < numThreads; ++t) {
-          int startJ = t * chunk;
-          int endJ = (t == numThreads - 1) ? numV : startJ + chunk;
-          if (startJ >= numV) break;
-          
-          futures.push_back(std::async(std::launch::async, [startJ, endJ, numU, numV, bboxMin, bboxMax, &mlsVertices, &mlsNormals]() {
-              for (int j = startJ; j < endJ; ++j) {
-                float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
-                float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
-                for (int i = 0; i < numU; ++i) {
-                  float u = (numU == 1) ? 0.5f : static_cast<float>(i) / (numU - 1);
-                  float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
-                  WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
-                  mlsVertices[j * numU + i] = res.pt;
-                  mlsNormals[j * numU + i] = res.normal;
-                }
-              }
-          }));
+        int startJ = t * chunk;
+        int endJ = (t == numThreads - 1) ? numV : startJ + chunk;
+        if (startJ >= numV)
+          break;
+
+        futures.push_back(std::async(std::launch::async, [startJ, endJ, numU,
+                                                          numV, bboxMin,
+                                                          bboxMax, &mlsVertices,
+                                                          &mlsNormals]() {
+          for (int j = startJ; j < endJ; ++j) {
+
+            float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
+            float y = bboxMin[1] + v * (bboxMax[1] - bboxMin[1]);
+            for (int i = 0; i < numU; ++i) {
+              float u = (numU == 1) ? 0.5f : static_cast<float>(i) / (numU - 1);
+              float x = bboxMin[0] + u * (bboxMax[0] - bboxMin[0]);
+              WLSResult res = approximateWLS(*sds, x, y, wlsRadius);
+              mlsVertices[j * numU + i] = res.pt;
+              mlsNormals[j * numU + i] = res.normal;
+            }
+          }
+        }));
       }
-      for (auto& f : futures) { f.get(); }
+      for (auto &f : futures) {
+        f.get();
+      }
 
       std::vector<std::vector<size_t>> mlsFaces;
       for (int j = 0; j < numV - 1; ++j) {
@@ -869,7 +906,9 @@ int main(int argc, char **argv) {
     std::cerr << parser;
     return 1;
   }
+
   // Options
+
   polyscope::options::groundPlaneMode = polyscope::GroundPlaneMode::ShadowOnly;
   polyscope::options::shadowBlurIters = 6;
 
