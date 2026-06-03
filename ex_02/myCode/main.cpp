@@ -476,16 +476,17 @@ Point deCasteljau1D(std::vector<Point> pts, float t) {
   // n is degree of the Bezier curve
   if (n < 0)
     return {0, 0, 0};
-  // loop from degree 1 up to n
+  // repeat interpolation step from degree 1 to n
   for (int r = 1; r <= n; ++r) {
     // loop through the control points
     for (int i = 0; i <= n - r; ++i) {
+      // lin interpolation formula
       for (int k = 0; k < 3; ++k) {
         pts[i][k] = (1.0f - t) * pts[i][k] + t * pts[i + 1][k];
       }
     }
   }
-  return pts[0];
+  return pts[0]; // exact point for bezier
 }
 
 Point deCasteljauDeriv1D(const std::vector<Point> &pts, float t) {
@@ -772,6 +773,8 @@ void callback() {
       std::vector<Point> surfVertices(numU * numV);
       std::vector<Normal> surfNormals(numU * numV);
 
+      // numV is resolution of v
+      // find out where we are in the grid
       for (int j = 0; j < numV; ++j) {
         float v = (numV == 1) ? 0.5f : static_cast<float>(j) / (numV - 1);
 
