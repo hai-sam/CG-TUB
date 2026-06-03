@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <queue>
 
 #include "args/args.hxx"
 #include "polyscope/combining_hash_functions.h"
