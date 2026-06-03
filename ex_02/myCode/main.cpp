@@ -800,7 +800,11 @@ void callback() {
                                                      surfVertices, surfFaces);
       surfMesh->addVertexVectorQuantity("normals", surfNormals);
 
+      // edges for control points
       std::vector<std::array<size_t, 2>> ctrlEdges;
+      // for every controllpoint
+      // gridN -> x-axe points (rows)
+      // gridM -> y-axe points (columns)
       for (int j = 0; j < gridN; ++j) {
         for (int i = 0; i < gridM; ++i) {
           size_t idx = j * gridM + i;
