@@ -15,7 +15,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-
+#include <sstream>
+#include <string>
 #include "args/args.hxx"
 #include "polyscope/combining_hash_functions.h"
 #include "polyscope/curve_network.h"
@@ -29,7 +30,7 @@
 using Point = std::array<float, 3>;
 using Normal = std::array<float, 3>;
 
-void readOff(const std::string &filename, std::vector<Point> &points,
+void readOff(const std::string& filename, std::vector<Point> &points,
              std::vector<Normal> &normals) {
   points.clear();
   normals.clear();
