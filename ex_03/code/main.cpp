@@ -1030,6 +1030,45 @@ float evaluateImplicit(const Point& p, const KDTree& constraintSDS, float wlsRad
           
       return sumW > 0 ? sumWF / sumW : 0.0f;
 }
+float evaluateImplicitLinear(const Point& p, const KDTree& constraintSDS, float wlsRadius, 
+  const std::vector<Point>& constraintPoints,
+  const std::vector<float>& constraintValues) {
+  std::vector<std::size_t> neighbors = constraintSDS.collectInRadius(p, wlsRadius);
+    
+if (neighbors.empty()) return 0.0f;
+    
+  int n = neighbors.size();
+  if (n < 4) {
+    // not enough values to solve system
+    return evaluateImplicit(p, constraintSDS, wlsRadius, constraintPoints, constraintValues);
+  }
+  Eigen::MatrixXf A(n, 4);
+  Eigen::VectorXf B(n);
+  Eigen::VectorXf W(n);
+    
+  for (int i = 0; i < n; i++) {
+      Point cp = constraintPoints[neighbors[i]];
+      A(i, 0) = 1.0f;
+      A(i, 1) = cp[0];
+      A(i, 2) = cp[1];
+      A(i, 3) = cp[2];
+      B(i) = constraintValues[neighbors[i]];
+      float dist = EuclideanDistance::measure(p, cp);
+      W(i) = wendlandWeight(dist, wlsRadius);
+  }
+  for (int i = 0; i < n; i++) {
+    float w_sqrt = std::sqrt(W(i));
+    A.row(i) *= w_sqrt;
+    B(i) *= w_sqrt;
+  }
+  Eigen::VectorXf c = A.colPivHouseholderQr().solve(B);
+
+  if (c.hasNaN()) {
+    return evaluateImplicit(p, constraintSDS, wlsRadius, constraintPoints, constraintValues);
+  }
+
+  return c(0) + c(1)*p[0] + c(2)*p[1] + c(3)*p[2];
+}
 void callback() {
 
   if (ImGui::Button("Load Off")) {
@@ -1343,6 +1382,9 @@ void callback() {
 
   static int numGridPoints = 10;
   ImGui::SliderInt("Grid Points", &numGridPoints, 2, 100);
+  static int basisType = 0;
+  const char *basisTypes[] = {"Constant", "Linear"};
+  ImGui::Combo("Basis Type", &basisType, basisTypes, 2);
 
   if (ImGui::Button("Generate Constraints and Grid")) {
     constraintPoints.clear();
@@ -1350,18 +1392,16 @@ void callback() {
     gridPoints.clear();
     meshVertices.clear();
     meshFaces.clear();
+
     if (sds != nullptr) {
       Point bboxMin;
       Point bboxMax;
       sds->getBounds(bboxMin, bboxMax);
 
       float alpha = 0.01 * EuclideanDistance().measure(bboxMin, bboxMax);
-      std::ofstream log("/Users/scherwing/Uni/Berlin/cg2/CG-TUB/ex_01/skeleton/debug.txt");
-      log << alpha << std::endl;
       for (unsigned int i = 0; i < FilePoints.size(); i++) {
         float PosAlpha = alpha;
         Point pPos;
-        int posIter = 0;
         while(true) {
           pPos = {
             FilePoints[i][0] + FileNormals[i][0] * PosAlpha,
@@ -1372,16 +1412,10 @@ void callback() {
             break;
           }
           PosAlpha /= 2;
-          posIter++;
-          if (posIter > 50) {
-              log << "Point " << i << " pos loop exceeded 50 iterations" << std::endl;
-              break;
-          }
         }
 
         float NegAlpha = alpha;
         Point pNeg;
-        int negIter = 0;
         while (true) {
           pNeg = {
             FilePoints[i][0] - FileNormals[i][0] * NegAlpha,
@@ -1392,12 +1426,8 @@ void callback() {
             break;
           }
           NegAlpha /= 2;
-          negIter++;
-          if (negIter > 50) {
-              log << "Point " << i << " neg loop exceeded 50 iterations" << std::endl;
-              break;
-          }
         }
+
         constraintPoints.emplace_back(FilePoints[i]);
         constraintValues.emplace_back(0.0f);
     
@@ -1407,7 +1437,6 @@ void callback() {
         constraintPoints.emplace_back(pNeg);
         constraintValues.emplace_back(-NegAlpha);
       }
-      log.close();
       // generate grid
 
       // make bbox slightly larger
@@ -1433,23 +1462,16 @@ void callback() {
       std::vector<float> gridValues;
 
       for (const Point& gridPoint : gridPoints) {
-          // find all constraint points within radius
-          std::vector<std::size_t> neighbors = constraintSDS->collectInRadius(gridPoint, wlsRadius);
-          
-          float sumW = 0.0f;
-          float sumWF = 0.0f;
-          
-          for (std::size_t idx : neighbors) {
-              float dist = EuclideanDistance::measure(gridPoint, constraintPoints[idx]);
-              float w = wendlandWeight(dist, wlsRadius);
-              sumWF += w * constraintValues[idx];
-              sumW += w;
-          }
-          
-          gridValues.emplace_back(sumW > 0 ? sumWF / sumW : 0.0f);
+        if (basisType == 0){
+          gridValues.emplace_back(evaluateImplicit(gridPoint, *constraintSDS, wlsRadius, constraintPoints, constraintValues));
+        } else {
+          gridValues.emplace_back(evaluateImplicitLinear(gridPoint, *constraintSDS, wlsRadius, constraintPoints, constraintValues));
+        }
       }
+
       auto gridPC = polyscope::registerPointCloud("Grid Points", gridPoints);
-      gridPC->addScalarQuantity("implicit function", gridValues)->setEnabled(true);
+      auto q = gridPC->addScalarQuantity("implicit function", gridValues);
+      q->setMapRange({-alpha, alpha});
 
       // apply marching cubes algorithm
       // returns index of point at pos x,y,z
