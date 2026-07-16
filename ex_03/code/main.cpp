@@ -1,4 +1,5 @@
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 #include <_stdio.h>
 #include <array>
 #include <chrono>
@@ -936,6 +937,13 @@ polyscope::PointCloud *pc = nullptr;
 std::unique_ptr<KDTree> sds;
 std::vector<Point> FilePoints;
 std::vector<Normal> FileNormals;
+std::vector<float> constraintValues;
+std::vector<Point> constraintPoints;
+std::vector<Point> gridPoints;
+std::vector<Point> meshVertices;
+std::unique_ptr<KDTree> constraintSDS = nullptr;
+std::vector<std::array<size_t, 3>> meshFaces;
+std::vector<Point> meshVerticesUniLaplace;
 
 /*
    Linearly interpolate the position where an isosurface cuts
@@ -1068,6 +1076,40 @@ if (neighbors.empty()) return 0.0f;
   }
 
   return c(0) + c(1)*p[0] + c(2)*p[1] + c(3)*p[2];
+}
+void readOffMesh(const std::string& filename, std::vector<Point>& vertices, std::vector<std::array<size_t,3>>& faces) {
+    vertices.clear();
+    faces.clear();
+    
+    std::string line;
+    std::ifstream file(filename);
+    
+    std::getline(file, line); // OFF header
+    std::getline(file, line); // counts
+    std::istringstream meta(line);
+    int Nvertices, Nfaces, Nedges;
+    meta >> Nvertices >> Nfaces >> Nedges;
+    
+    // read vertices
+    for (int i = 0; i < Nvertices; i++) {
+        std::getline(file, line);
+        std::istringstream vs(line);
+        float x, y, z;
+        vs >> x >> y >> z;
+        vertices.push_back({x, y, z});
+    }
+    
+    // read faces
+    for (int i = 0; i < Nfaces; i++) {
+        std::getline(file, line);
+        std::istringstream fs(line);
+        int count;
+        fs >> count; // number of vertices in this face (should be 3)
+        size_t a, b, c;
+        fs >> a >> b >> c;
+        faces.push_back({a, b, c});
+    }
+    file.close();
 }
 void callback() {
 
@@ -1373,13 +1415,6 @@ void callback() {
     }
   }
 
-  std::vector<float> constraintValues;
-  std::vector<Point> constraintPoints;
-  std::vector<Point> gridPoints;
-  std::vector<Point> meshVertices;
-  std::unique_ptr<KDTree> constraintSDS = nullptr;
-  std::vector<std::array<size_t, 3>> meshFaces;
-
   static int numGridPoints = 10;
   ImGui::SliderInt("Grid Points", &numGridPoints, 2, 100);
   static int basisType = 0;
@@ -1508,6 +1543,33 @@ void callback() {
             }
         }
       }
+      auto roundPoint = [](Point p) -> Point {
+      float scale = 1e4f;
+      return { std::round(p[0]*scale)/scale, 
+              std::round(p[1]*scale)/scale, 
+              std::round(p[2]*scale)/scale };
+      };
+
+      std::map<Point, size_t> uniqueMap;
+      std::vector<size_t> remap(meshVertices.size());
+      std::vector<Point> weldedVertices;
+      for (size_t i = 0; i < meshVertices.size(); i++) {
+          Point key = roundPoint(meshVertices[i]);
+          auto it = uniqueMap.find(key);
+          if (it != uniqueMap.end()) {
+              remap[i] = it->second;
+          } else {
+              remap[i] = weldedVertices.size();
+              uniqueMap[key] = weldedVertices.size();
+              weldedVertices.push_back(meshVertices[i]); // store original, not rounded
+          }
+      }
+      std::vector<std::array<size_t,3>> weldedFaces;
+      for (auto& f : meshFaces) {
+          weldedFaces.push_back({remap[f[0]], remap[f[1]], remap[f[2]]});
+      }
+      meshVertices = weldedVertices;
+      meshFaces = weldedFaces;
       std::vector<Point> vertexNormals;
       for (Point vertice : meshVertices) {
         float epsilon = 0.001;
@@ -1540,6 +1602,320 @@ void callback() {
       auto mesh = polyscope::registerSurfaceMesh("Marching Cubes", meshVertices, meshFaces);
       mesh->addVertexVectorQuantity("normals", vertexNormals);      
     }
+  }
+
+  ImGui::Separator();
+  ImGui::Text("Exercise 4: Mesh Smoothing");
+
+  if (ImGui::Button("Load Mesh (OFF)")) {
+    auto paths = pfd::open_file("Load Mesh", "", 
+        std::vector<std::string>{"mesh (*.off)", "*.off"}, pfd::opt::none).result();
+    if (!paths.empty()) {
+        readOffMesh(paths[0], meshVertices, meshFaces);
+        polyscope::registerSurfaceMesh("Loaded Mesh", meshVertices, meshFaces);
+    }
+  }
+  static float lambda = 0.1f;
+  ImGui::SliderFloat("Lambda", &lambda, 0.1f, 10.0f);
+
+  static int massMatrix = 0;
+  const char *massMatrices[] = {"Barycentric", "Circumcentric"};
+  ImGui::Combo("Mass Matrix", &massMatrix, massMatrices, 2);
+
+  static int integrationMode = 0;
+  const char *integrationModes[] = {"Explicit", "Implicit"};
+  ImGui::Combo("Integration Mode", &integrationMode, integrationModes, 2);
+
+  static int stepSize = 1;
+  ImGui::SliderInt("Step Size", &stepSize, 1, 10);
+
+  if (ImGui::Button("Smooth with Uniform Laplacian")) {
+    if (meshFaces.empty()) return;
+    meshVerticesUniLaplace.clear();
+    
+    // build adjacancy matrix
+    std::vector<std::set<size_t>> adjacency(meshVertices.size());
+    for (auto& face : meshFaces) {
+        adjacency[face[0]].insert(face[1]);
+        adjacency[face[0]].insert(face[2]);
+        adjacency[face[1]].insert(face[0]);
+        adjacency[face[1]].insert(face[2]);
+        adjacency[face[2]].insert(face[0]);
+        adjacency[face[2]].insert(face[1]);
+    }
+    for (int i = 0; i < stepSize ; i++){
+      for (unsigned int i = 0; i < meshVertices.size(); i++) {
+        std::set<unsigned long> N = adjacency[i];
+        Point sum = {0,0,0};
+        for (size_t n : N) {
+          sum[0] += meshVertices[n][0] - meshVertices[i][0];
+          sum[1] += meshVertices[n][1] - meshVertices[i][1];
+          sum[2] += meshVertices[n][2] - meshVertices[i][2];
+        }
+        Point newPos;
+
+        newPos[0] = meshVertices[i][0] + sum[0] / N.size();
+        newPos[1] = meshVertices[i][1] + sum[1] / N.size();
+        newPos[2] = meshVertices[i][2] + sum[2] / N.size();
+
+        meshVerticesUniLaplace.push_back(newPos);
+      }
+    }
+    meshVertices = meshVerticesUniLaplace;
+    polyscope::registerSurfaceMesh("Uniform Laplacian", meshVerticesUniLaplace, meshFaces);
+
+  }
+  if (ImGui::Button("Smooth with cotan Laplacian")) {
+    if (meshFaces.empty()) return;
+    meshVerticesUniLaplace.clear();
+    
+    // build adjacancy structures
+    // get opposite vertex of edge
+
+    // always have pair(u,v) with u < v to make edge key consistent (no matter direction)
+    auto edgeKey = [](size_t u, size_t v) {
+      return std::make_pair(std::min(u,v), std::max(u,v));
+    };
+
+    // store the vertex not contained in that edge
+    std::map<std::pair<size_t,size_t>, std::vector<size_t>> edgeOpposite;
+
+    for (auto& face : meshFaces) {
+        size_t a = face[0], b = face[1], c = face[2];
+        edgeOpposite[edgeKey(a,b)].push_back(c);
+        edgeOpposite[edgeKey(b,c)].push_back(a);
+        edgeOpposite[edgeKey(a,c)].push_back(b);
+    }
+
+    // calculate cotangent at vertex o
+    auto cotangent = [&](size_t o, size_t i, size_t j) -> float {
+      Point vo = meshVertices[o];
+      Point vi = meshVertices[i];
+      Point vj = meshVertices[j];
+      
+      // vectors from o to i and o to j
+      Point a = {vi[0]-vo[0], vi[1]-vo[1], vi[2]-vo[2]};
+      Point b = {vj[0]-vo[0], vj[1]-vo[1], vj[2]-vo[2]};
+      
+      // cot = cos/sin = dot / |cross|
+      float dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+      Point cross = {
+          a[1]*b[2] - a[2]*b[1],
+          a[2]*b[0] - a[0]*b[2],
+          a[0]*b[1] - a[1]*b[0]
+      };
+      float crossLen = std::sqrt(cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]);
+      
+      return dot / crossLen;
+    };
+
+    // get neighbours (this time with a set since we iterate over neighbours and dont want duplicates)
+    std::vector<std::set<size_t>> adjacency(meshVertices.size());
+    for (auto& face : meshFaces) {
+        adjacency[face[0]].insert(face[1]);
+        adjacency[face[0]].insert(face[2]);
+        adjacency[face[1]].insert(face[0]);
+        adjacency[face[1]].insert(face[2]);
+        adjacency[face[2]].insert(face[0]);
+        adjacency[face[2]].insert(face[1]);
+    }
+    std::vector<Eigen::Triplet<float>> triplets;
+    for (unsigned int i = 0; i < meshVertices.size(); i++) {
+      float weightSum = 0;
+      for (size_t j : adjacency[i]) {
+        if (j==i) continue;
+        auto key = edgeKey(i, j);
+        float w = 0;
+        int oppositeCount = edgeOpposite[key].size();
+        // use loop since it could be one or two values
+        for (size_t o : edgeOpposite[key]) {
+          w += cotangent(o, i, j);
+        }
+        
+        w *= 0.5f;
+        weightSum += w;
+        // for every i,j where edge exists we add weight
+        triplets.emplace_back(i, j, w);
+      }
+      // on the diagonal i,i we have the negative sum so each row sums um to 0 (so that cotan on a flat surface = 0)
+      triplets.emplace_back(i, i, -weightSum);
+    }
+
+    // actually create the sparse matrix
+    int n = meshVertices.size();
+    Eigen::SparseMatrix<float> L(n, n);
+    L.setFromTriplets(triplets.begin(), triplets.end());
+
+    auto triangleArea = [](Point va, Point vb, Point vc) -> float {
+      Point e1 = {vb[0]-va[0], vb[1]-va[1], vb[2]-va[2]};
+      Point e2 = {vc[0]-va[0], vc[1]-va[1], vc[2]-va[2]};
+      Point cross = {
+          e1[1]*e2[2] - e1[2]*e2[1],
+          e1[2]*e2[0] - e1[0]*e2[2],
+          e1[0]*e2[1] - e1[1]*e2[0]
+      };
+      return 0.5f * std::sqrt(cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]);
+    };
+    std::vector<float> vertexArea(meshVertices.size(), 0.0f);
+    for (auto& face : meshFaces) {
+        float area = triangleArea(meshVertices[face[0]], meshVertices[face[1]], meshVertices[face[2]]);
+        vertexArea[face[0]] += area / 3.0f;
+        vertexArea[face[1]] += area / 3.0f;
+        vertexArea[face[2]] += area / 3.0f;
+    }
+
+    Eigen::SparseMatrix<float> lumpedMassMatrix(n, n);
+    std::vector<Eigen::Triplet<float>> lumpedMassMatrixTriplets;
+    for (int i = 0; i < n; i++) {
+        lumpedMassMatrixTriplets.emplace_back(i, i, 1.0f / vertexArea[i]);
+    }
+    lumpedMassMatrix.setFromTriplets(lumpedMassMatrixTriplets.begin(), lumpedMassMatrixTriplets.end());
+
+    // calculate circumcentric dual mass matrix
+    auto circumcenter = [&](size_t ai, size_t bi, size_t ci) -> Point {
+      Point a = meshVertices[ai];
+      Point b = meshVertices[bi];
+      Point c = meshVertices[ci];
+      
+      // edge vectors from a
+      Point ab = {b[0]-a[0], b[1]-a[1], b[2]-a[2]};
+      Point ac = {c[0]-a[0], c[1]-a[1], c[2]-a[2]};
+      
+      // squared lengths
+      float abLen2 = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2];
+      float acLen2 = ac[0]*ac[0] + ac[1]*ac[1] + ac[2]*ac[2];
+      
+      // cross product of the two edges
+      Point cross = {
+          ab[1]*ac[2] - ab[2]*ac[1],
+          ab[2]*ac[0] - ab[0]*ac[2],
+          ab[0]*ac[1] - ab[1]*ac[0]
+      };
+      float crossLen2 = cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2];
+      
+      // the circumcenter offset from vertex a
+      Point num1 = {ac[0]*abLen2, ac[1]*abLen2, ac[2]*abLen2};
+      Point num2 = {ab[0]*acLen2, ab[1]*acLen2, ab[2]*acLen2};
+      Point diff = {num1[0]-num2[0], num1[1]-num2[1], num1[2]-num2[2]};
+      
+      // cross diff with cross vector
+      Point offset = {
+          diff[1]*cross[2] - diff[2]*cross[1],
+          diff[2]*cross[0] - diff[0]*cross[2],
+          diff[0]*cross[1] - diff[1]*cross[0]
+      };
+      float scale = 1.0f / (2.0f * crossLen2);
+      
+      return {
+          a[0] + offset[0]*scale,
+          a[1] + offset[1]*scale,
+          a[2] + offset[2]*scale
+      };
+    };
+
+    // calculate area of cell given by half edge points and circumcenter
+    auto voronoiContribution = [&](size_t i, size_t j, size_t k) -> float {
+      Point vi = meshVertices[i];
+      Point vj = meshVertices[j];
+      Point vk = meshVertices[k];
+      
+      // midpoints of the two edges from i
+      Point mij = {(vi[0]+vj[0])/2, (vi[1]+vj[1])/2, (vi[2]+vj[2])/2};
+      Point mik = {(vi[0]+vk[0])/2, (vi[1]+vk[1])/2, (vi[2]+vk[2])/2};
+      
+      // circumcenter of the triangle
+      Point cc = circumcenter(i, j, k);
+      
+      // the quadrilateral (i, mij, cc, mik) splits into two triangles:
+      // (i, mij, cc) and (i, cc, mik)
+      float area1 = triangleArea(vi, mij, cc);
+      float area2 = triangleArea(vi, cc, mik);
+      
+      return area1 + area2;
+    };
+    std::vector<float> voronoiArea(meshVertices.size(), 0.0f);
+    for (auto& face : meshFaces) {
+        voronoiArea[face[0]] += voronoiContribution(face[0], face[1], face[2]);
+        voronoiArea[face[1]] += voronoiContribution(face[1], face[2], face[0]);
+        voronoiArea[face[2]] += voronoiContribution(face[2], face[0], face[1]);
+    }
+
+    Eigen::SparseMatrix<float> circumcentricMassMatrix(n, n);
+    std::vector<Eigen::Triplet<float>> circumcentricMassMatrixTriplets;
+    for (int i = 0; i < n; i++) {
+        circumcentricMassMatrixTriplets.emplace_back(i, i, 1.0f / voronoiArea[i]);
+    }
+    circumcentricMassMatrix.setFromTriplets(circumcentricMassMatrixTriplets.begin(), circumcentricMassMatrixTriplets.end());
+
+    // choose which mass matrix to use
+    Eigen::SparseMatrix<float>* Minv;
+    if (massMatrix == 0) { // barycentric
+      Minv = &lumpedMassMatrix;
+    } else { // circumcentric
+      Minv = &circumcentricMassMatrix;
+    }
+
+    // for implicit euler
+    Eigen::SparseLU<Eigen::SparseMatrix<float>> solver;
+    if (integrationMode == 1) {
+      Eigen::SparseMatrix<float> I(n, n);
+      I.setIdentity();
+
+      // (I − h M⁻¹L) f_{t+h} = f_t
+      // system matrix A = I - lambda * Minv * L | I − h M⁻¹L
+      Eigen::SparseMatrix<float> A = I - (0.1 * lambda) * ((*Minv) * L);
+
+      solver.compute(A);
+      if (solver.info() != Eigen::Success) {
+          polyscope::warning("Solver factorization failed");
+          return;
+      }
+    }
+    for (int step = 0; step < stepSize; step++) {
+      // implicit euler: v_new = v + lambda * Minv * L * v
+      if (integrationMode == 1) {
+        Eigen::VectorXf x(n), y(n), z(n);
+        for (int i = 0; i < n; i++) {
+            x(i) = meshVertices[i][0];
+            y(i) = meshVertices[i][1];
+            z(i) = meshVertices[i][2];
+        }
+
+        Eigen::VectorXf newX = solver.solve(x);
+        Eigen::VectorXf newY = solver.solve(y);
+        Eigen::VectorXf newZ = solver.solve(z);
+
+        for (int i = 0; i < n; i++) {
+          meshVertices[i] = {newX(i), newY(i), newZ(i)};
+        }
+      } else {
+        // explicit euler: v_new = v + lambda * Minv * L * v
+        Eigen::VectorXf x(n), y(n), z(n);
+        for (int i = 0; i < n; i++) {
+            x(i) = meshVertices[i][0];
+            y(i) = meshVertices[i][1];
+            z(i) = meshVertices[i][2];
+        }
+        Eigen::VectorXf newX = x + (0.1 * lambda) * ((*Minv) * (L * x));
+        Eigen::VectorXf newY = y + (0.1 * lambda) * ((*Minv) * (L * y));
+        Eigen::VectorXf newZ = z + (0.1 * lambda) * ((*Minv) * (L * z));
+
+        Eigen::VectorXf testResult = L * x;
+
+        Eigen::VectorXf displacement = lambda * ((*Minv) * (L * x));
+        Eigen::VectorXf ones = Eigen::VectorXf::Ones(n);
+        
+        for (int i = 0; i < n; i++) {
+            meshVertices[i] = {newX(i), newY(i), newZ(i)};
+        }
+      }
+    }
+
+    meshVerticesUniLaplace.clear();
+    for (int i = 0; i < n; i++) {
+        meshVerticesUniLaplace.push_back(meshVertices[i]);
+    }
+    polyscope::registerSurfaceMesh("Cotan Laplacian", meshVerticesUniLaplace, meshFaces);
   }
 }
 
